@@ -2,10 +2,13 @@
 import datetime
 import hashlib
 import json
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template
 import requests
 from uuid import uuid4
 from urllib.parse import urlparse
+from markupsafe import escape
+import sys
+import os
 
 #Blockchain
 class Blockchain:
@@ -20,6 +23,25 @@ class Blockchain:
     
     def get_previous_block(self):
         return self.chain[-1]
+
+    def save_chain(self,chain):
+        save = {'chain': chain,
+                'length': len(chain)}
+        f = open ('chain.json', 'w')
+        json_save = json.dumps(save)
+        f.write(json_save)
+        f.close()
+
+    def open_chain(self):
+        try:
+            f = open('chain.json', 'r')
+        except:
+            pass
+        else:
+            chain_json = json.loads(f.read())
+            chain = chain_json['chain']
+            if self.is_chain_valid(chain):
+                self.chain = chain
 
     def hash(self, block):
         block_ind = str(block['index']).encode('utf-8')
@@ -71,8 +93,18 @@ class Blockchain:
             hostname_cur = o.hostname + ':' + str(o.port)        
             for node in network:
                 if node != hostname_cur:
-                    requests.get(f'http://{node}/new_block_is_mined')
+                    try:
+                        requests.get(f'http://{node}/new_block_is_mined', timeout=0.1)
+                    except requests.exceptions.ReadTimeout: 
+                        pass
+                    except requests.exceptions.ConnectTimeout:
+                        pass
+                    except requests.exceptions.Timeout:
+                        pass
+                    except requests.exceptions.ConnectionError:
+                        pass
             self.replace_chain()
+            self.save_chain(self.chain)
             return block
         
     def create_start_block(self, previous_hash):
@@ -119,7 +151,10 @@ class Blockchain:
     
     def add_node(self, address):
         parsed_url = urlparse(address)
-        self.nodes.add(parsed_url.netloc)
+        for node in self.nodes:
+            if node == parsed_url.path:
+                return
+        self.nodes.add(parsed_url.path)
     
     def replace_chain(self):
         network = self.nodes
@@ -130,29 +165,86 @@ class Blockchain:
         min_proof = self.chain[-1]['proof']
         for node in network:
             if node != hostname_cur:
-                response = requests.get(f'http://{node}/get_chain')
-                if response.status_code == 200:
-                    length = response.json()['length']
-                    chain = response.json()['chain']
-                    if length == max_length and min_proof  > chain[-1]['proof']:
-                        min_proof = chain[-1]['proof']
-                        longest_chain = chain
-                    if length > max_length and self.is_chain_valid(chain):
-                        max_length = length
-                        min_proof = chain[-1]['proof']
-                        longest_chain = chain
+                try:
+                    response = requests.get(f'http://{node}/get_chain', timeout=0.1)
+                except requests.exceptions.ReadTimeout: 
+                    pass
+                except requests.exceptions.ConnectTimeout:
+                    pass
+                except requests.exceptions.Timeout:
+                    pass
+                except requests.exceptions.ConnectionError:
+                    pass
+                else:
+                    if response.status_code == 200:
+                        length = response.json()['length']
+                        chain = response.json()['chain']
+                        if length == max_length and min_proof  > chain[-1]['proof']:
+                            min_proof = chain[-1]['proof']
+                            longest_chain = chain
+                        if length > max_length and self.is_chain_valid(chain):
+                            max_length = length
+                            min_proof = chain[-1]['proof']
+                            longest_chain = chain
         if longest_chain:
             self.chain = longest_chain
+            self.save_chain(self.chain)
             print('Chain replaced for New')
             return True
         print('Chain None replaced')
         return False
 
-
+    def parse_signatures(self,chain):
+        signatures_list = []
+        for zv in chain:
+            transactions = zv['transactions']
+            for transction in transactions:
+                new_signature = transction['signature']
+                signature_pref = 0
+                for signature in signatures_list:
+                    if signature == new_signature:
+                        signature_pref = 1
+                        break
+                if signature_pref == 0:
+                    signatures_list.append(transction['signature'])
+        return signatures_list
+    
+    def parse_signature_transaction(self,chain, signature):
+        transactions_list = []
+        for zv in chain:
+            transactions = zv['transactions']
+            for transction in transactions:
+                if signature == transction['signature']:
+                    transactions_list.append(transction)
+        return transactions_list
+    
 #HTTP 
 app = Flask(__name__)
 node_address = str(uuid4()).replace('-', '')
+print(f'Node adress: {node_address}')
 blockchain = Blockchain()
+
+@app.route('/')
+def get_main_form():
+    try:
+        f = open('templates/index.html', 'r')
+    except:
+        return '404', 404
+    else:
+        f.close()
+        return render_template('index.html'), 200
+
+@app.route('/parse_signatures')
+def parse_signatures():
+    signatures = blockchain.parse_signatures(blockchain.chain)
+    response = {'signatures': list(signatures)}
+    return jsonify(response),200
+
+@app.route('/parse_transactions/<signature>')
+def parse_transactions(signature):
+    transactions = blockchain.parse_signature_transaction(blockchain.chain,escape(signature))
+    response = {'transactions': list(transactions)}
+    return jsonify(response),200
 
 @app.route('/new_block_is_mined', methods = ['GET'])
 def new_block_is_mined():
@@ -180,6 +272,8 @@ def mine_block():
                         pass
                     except requests.exceptions.Timeout:
                         pass
+                    except requests.exceptions.ConnectionError:
+                        pass
             previous_block = blockchain.get_previous_block()
             previous_hash = blockchain.hash(previous_block)
             block = blockchain.create_block(previous_hash)
@@ -206,6 +300,13 @@ def get_chain():
                 'length': len(blockchain.chain)}
     return jsonify(response), 200
 
+@app.route('/get_chain_json')
+def get_chain_json():
+    f = open('chain.json', 'r')
+    html = f.read()
+    f.close()
+    return html, 200
+
 @app.route('/is_valid', methods = ['GET'])
 def is_valid():
     is_valid = blockchain.is_chain_valid(blockchain.chain)
@@ -231,7 +332,16 @@ def add_transaction():
            'Content-Encoding': 'utf-8'}
         for node in network:
             if node != hostname_cur:
-                response = requests.get(f'http://{node}/add_transaction', data = json.dumps(jsonp), headers=headers)
+                try:
+                    requests.get(f'http://{node}/add_transaction', data = json.dumps(jsonp), headers=headers, timeout=0.0000000001)
+                except requests.exceptions.ReadTimeout: 
+                    pass
+                except requests.exceptions.ConnectTimeout:
+                    pass
+                except requests.exceptions.Timeout:
+                    pass
+                except requests.exceptions.ConnectionError:
+                    pass
         response = {'message': f'Транзакция учтена и предположительно будет проведена в блоке {index}'}
         return jsonify(response), 200
     else:
@@ -256,6 +366,20 @@ def connect_nodes():
 
 @app.route('/get_nodes', methods = ['GET'])
 def get_nodes():
+    response = {'nodes': list(blockchain.nodes)}
+    return jsonify(response), 200
+
+@app.route('/add_node', methods = ['GET'])
+def add_node():
+    jsonp = request.get_json()
+    node = jsonp.get('nodes')
+    blockchain.add_node(node)
+    f = open('nodes.json','w')
+    nodes_list = {'nodes': list(blockchain.nodes),
+                  'length': len(blockchain.nodes)}
+    json_node_list = json.dumps(nodes_list)
+    f.write(json_node_list)
+    f.close()
     return jsonify(list(blockchain.nodes)), 200
 
 @app.route('/replace_chain', methods = ['GET'])
@@ -272,11 +396,74 @@ def replace_chain():
     return jsonify(response), 200
 
 #Получение списка узлов
-f = open('nodes.json','r')
-jsonp = json.loads(f.read())
-nodes = jsonp.get('nodes')
-for node in nodes:
-        blockchain.add_node(node)
-   
+print('Create folder "templates"')
+try:
+    os.mkdir("templates")
+except:
+    pass
+
+print('Open nodes file')
+try:
+    f = open('nodes.json','r')
+except:
+    pass
+else:
+    jsonp = json.loads(f.read())
+    f.close()
+    nodes = jsonp.get('nodes')
+    for node in nodes:
+            blockchain.add_node(node)
+
+print('Open chain file')
+blockchain.open_chain()
+
+port_node = 5000
+host_node = '127.0.0.1'
+arg = sys.argv
+if arg:
+    if len(arg) > 1:
+        port_node = arg[1]
+    if len(arg) > 2:
+        host_node = arg[2]
+    
+print(f'Node start on {host_node} to port: {port_node}')
+
+print('Try to connect nodes')
+hostname_cur = '127.0.0.1' + ':' + str(port_node)  
+blockchain.add_node(hostname_cur)
+network = blockchain.nodes
+for net_node in network:
+    if net_node != hostname_cur:
+        try:
+            response = requests.get(f'http://{net_node}/get_nodes') 
+        except requests.exceptions.ReadTimeout: 
+            pass
+        except requests.exceptions.ConnectTimeout:
+            pass
+        except requests.exceptions.Timeout:
+            pass
+        except requests.exceptions.ConnectionError:
+            pass
+        else:
+            print(f'Node {net_node} is active. Syncronization...')
+            nodes = response.json()['nodes']
+            if nodes is None:
+                pass
+            else:
+                net_node_have_me = 0
+                for node in nodes:
+                    blockchain.add_node(node) 
+                    if node == hostname_cur:
+                        net_node_have_me = 1
+                if net_node_have_me == 0:
+                    message = {'nodes': hostname_cur,
+                               'lentgth': 1}
+                    headers = {'Content-type': 'application/json',  
+                       'Accept': 'text/plain',
+                       'Content-Encoding': 'utf-8'}
+                    data = json.dumps(message)
+                    response = requests.get('http://{net_node}/add_node', data=data, headers=headers) 
+
 # Запуск сервера
-app.run(host = '0.0.0.0', port = 5003)
+print('Node ready to start:')
+app.run(host = host_node, port = port_node)
