@@ -95,13 +95,7 @@ class Blockchain:
                 if node != hostname_cur:
                     try:
                         requests.get(f'http://{node}/new_block_is_mined', timeout=0.1)
-                    except requests.exceptions.ReadTimeout: 
-                        pass
-                    except requests.exceptions.ConnectTimeout:
-                        pass
-                    except requests.exceptions.Timeout:
-                        pass
-                    except requests.exceptions.ConnectionError:
+                    except :
                         pass
             self.replace_chain()
             self.save_chain(self.chain)
@@ -167,13 +161,7 @@ class Blockchain:
             if node != hostname_cur:
                 try:
                     response = requests.get(f'http://{node}/get_chain', timeout=0.1)
-                except requests.exceptions.ReadTimeout: 
-                    pass
-                except requests.exceptions.ConnectTimeout:
-                    pass
-                except requests.exceptions.Timeout:
-                    pass
-                except requests.exceptions.ConnectionError:
+                except: 
                     pass
                 else:
                     if response.status_code == 200:
@@ -266,13 +254,7 @@ def mine_block():
                 if node != hostname_cur:
                     try:
                         response = requests.get(f'http://{node}/mine_block', timeout=0.0000000001)
-                    except requests.exceptions.ReadTimeout: 
-                        pass
-                    except requests.exceptions.ConnectTimeout:
-                        pass
-                    except requests.exceptions.Timeout:
-                        pass
-                    except requests.exceptions.ConnectionError:
+                    except:
                         pass
             previous_block = blockchain.get_previous_block()
             previous_hash = blockchain.hash(previous_block)
@@ -334,13 +316,7 @@ def add_transaction():
             if node != hostname_cur:
                 try:
                     requests.get(f'http://{node}/add_transaction', data = json.dumps(jsonp), headers=headers, timeout=0.0000000001)
-                except requests.exceptions.ReadTimeout: 
-                    pass
-                except requests.exceptions.ConnectTimeout:
-                    pass
-                except requests.exceptions.Timeout:
-                    pass
-                except requests.exceptions.ConnectionError:
+                except:
                     pass
         response = {'message': f'Транзакция учтена и предположительно будет проведена в блоке {index}'}
         return jsonify(response), 200
@@ -432,21 +408,17 @@ print('Try to connect nodes')
 hostname_cur = '127.0.0.1' + ':' + str(port_node)  
 blockchain.add_node(hostname_cur)
 network = blockchain.nodes
+headers_main = {'Connection': 'close'}
 for net_node in network:
     if net_node != hostname_cur:
         try:
-            response = requests.get(f'http://{net_node}/get_nodes') 
-        except requests.exceptions.ReadTimeout: 
-            pass
-        except requests.exceptions.ConnectTimeout:
-            pass
-        except requests.exceptions.Timeout:
-            pass
-        except requests.exceptions.ConnectionError:
+            response = requests.get(f'http://{net_node}/get_nodes',headers=headers_main) 
+        except:
             pass
         else:
             print(f'Node {net_node} is active. Syncronization...')
-            nodes = response.json()['nodes']
+            response.close()
+            nodes = response.json()['nodes']            
             if nodes is None:
                 pass
             else:
@@ -460,9 +432,16 @@ for net_node in network:
                                'lentgth': 1}
                     headers = {'Content-type': 'application/json',  
                        'Accept': 'text/plain',
-                       'Content-Encoding': 'utf-8'}
+                       'Content-Encoding': 'utf-8',
+                       'Connection': 'close'}
                     data = json.dumps(message)
-                    response = requests.get('http://{net_node}/add_node', data=data, headers=headers) 
+                    print(f'Try to response node {net_node}')
+                    try:
+                        response = requests.get(f'http://{net_node}/add_node', data=data, headers=headers) 
+                    except:
+                        pass
+                    else:
+                        response.close()
 
 # Запуск сервера
 print('Node ready to start:')
